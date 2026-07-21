@@ -1,0 +1,197 @@
+import sqlite3
+import pandas as pd
+import streamlit as st
+
+# 1. DB 연결 설정
+DB_PATH = "/home/smart/work/mini_mes/sql/mini_mes.db"
+
+
+def get_connection():
+    return sqlite3.connect(DB_PATH)
+
+
+def init_db():
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS orders (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            material_type TEXT NOT NULL,
+            material TEXT NOT NULL,
+            size TEXT NOT NULL,
+            quantity INTEGER NOT NULL,
+            order_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+
+init_db()
+
+# 2. UI 데이터 정의
+SIZES = [
+    "8A",
+    "10A",
+    "15A",
+    "20A",
+    "25A",
+    "32A",
+    "40A",
+    "50A",
+    "65A",
+    "80A",
+    "100A",
+]
+MATERIALS = ["STEEL", "SUS", "COPPER"]
+MATERIAL_TYPES = [
+    "Pipe(6M)",
+    "coupling",
+    "Flange",
+    "elbow",
+    "tee",
+    "bolt",
+    "nut",
+    "gasket",
+]
+
+st.set_page_config(page_title="주문 내역서 관리", layout="wide")
+st.title("📦 자재 주문 내역서 관리 (등록 / 수정 / 삭제)")
+
+# 3. 신규 주문 등록
+st.subheader("1. 신규 주문 입력")
+with st.form("order_form", clear_on_submit=True):
+    col1, col2, col3, col4 = st.columns(4)
+
+    with col1:
+        selected_type = st.selectbox("자재 (Item)", MATERIAL_TYPES)
+    with col2:
+        selected_material = st.selectbox("재질 (Material)", MATERIALS)
+    with col3:
+        selected_size = st.selectbox("SIZE", SIZES)
+    with col4:
+        quantity = st.number_input("수량 (Qty)", min_value=1, value=1, step=1)
+
+    submitted = st.form_submit_button("주문 등록")
+
+    if submitted:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT INTO orders (material_type, material, size, quantity) VALUES (?, ?, ?, ?)",
+            (selected_type, selected_material, selected_size, quantity),
+        )
+        conn.commit()
+        conn.close()
+        st.success("주문이 성공적으로 등록되었습니다.")
+        st.rerun()
+
+st.divider()
+
+# 4. 주문 내역 조회 및 수정/삭제
+st.subheader("2. 전체 주문 내역 관리")
+
+conn = get_connection()
+df = pd.read_sql_query(
+    "SELECT id, material_type, material, size, quantity, order_date FROM orders ORDER BY id DESC",
+    conn,
+)
+conn.close()
+
+if not df.empty:
+    col_main, col_side = st.columns([3, 1])
+
+    with col_main:
+        # 삭제용 체크박스 컬럼 추가
+        df.insert(0, "선택", False)
+
+        # 컬럼명 변경
+        df_display = df.rename(
+            columns={
+                "id": "주문번호",
+                "material_type": "자재",
+                "material": "재질",
+                "size": "SIZE",
+                "quantity": "수량",
+                "order_date": "주문일시",
+            }
+        )
+
+        # st.data_editor를 사용하여 데이터 수정 및 선택 가능
+        edited_df = st.data_editor(
+            df_display,
+            hide_index=True,
+            use_container_width=True,
+            column_config={
+                "선택": st.column_config.CheckboxColumn("선택", default=False),
+                "주문번호": st.column_config.NumberColumn("주문번호", disabled=True),
+                "자재": st.column_config.SelectboxColumn(
+                    "자재", options=MATERIAL_TYPES, required=True
+                ),
+                "재질": st.column_config.SelectboxColumn(
+                    "재질", options=MATERIALS, required=True
+                ),
+                "SIZE": st.column_config.SelectboxColumn(
+                    "SIZE", options=SIZES, required=True
+                ),
+                "수량": st.column_config.NumberColumn(
+                    "수량", min_value=1, step=1, required=True
+                ),
+                "주문일시": st.column_config.DatetimeColumn("주문일시", disabled=True),
+            },
+        )
+
+        # 테이블 직접 수정 후 전체 저장 버튼
+        if st.button("💾 변경사항 전체 저장", type="primary"):
+            conn = get_connection()
+            cursor = conn.cursor()
+
+            for _, row in edited_df.iterrows():
+                cursor.execute(
+                    """
+                    UPDATE orders 
+                    SET material_type = ?, material = ?, size = ?, quantity = ? 
+                    WHERE id = ?
+                """,
+                    (
+                        row["자재"],
+                        row["재질"],
+                        row["SIZE"],
+                        int(row["수량"]),
+                        int(row["주문번호"]),
+                    ),
+                )
+
+            conn.commit()
+            conn.close()
+            st.success("변경 내용이 저장되었습니다.")
+            st.rerun()
+
+    with col_side:
+        st.markdown("### 🛠️ 일괄 삭제")
+
+        # 체크박스(선택)가 True인 행들 필터링
+        selected_rows = edited_df[edited_df["선택"] == True]
+        selected_ids = selected_rows["주문번호"].tolist()
+
+        if selected_ids:
+            st.warning(f"선택된 주문: {len(selected_ids)}건\n\nIDs: {selected_ids}")
+            if st.button("🗑️ 선택 항목 삭제"):
+                conn = get_connection()
+                cursor = conn.cursor()
+
+                # 선택된 ID 일괄 삭제
+                cursor.executemany(
+                    "DELETE FROM orders WHERE id = ?",
+                    [(id_,) for id_ in selected_ids],
+                )
+
+                conn.commit()
+                conn.close()
+                st.success(f"{len(selected_ids)}건의 주문이 삭제되었습니다.")
+                st.rerun()
+        else:
+            st.info("삭제할 항목의 체크박스를 좌측 테이블에서 선택하세요.")
+
+else:
+    st.info("등록된 주문 내역이 없습니다.")
