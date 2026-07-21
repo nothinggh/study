@@ -6,7 +6,7 @@ import streamlit as st
 # ==========================================
 # 1. DB 연동 함수들
 # ==========================================
-DB_FILE = "purchase_orders.db"
+DB_FILE = "pipe_mes.db"
 
 
 def get_connection():
@@ -17,7 +17,7 @@ def init_db():
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute("""
-        CREATE TABLE IF NOT EXISTS order_items (
+        CREATE TABLE IF NOT EXISTS orders (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             order_date TEXT,
             item_type TEXT,
