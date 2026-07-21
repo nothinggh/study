@@ -1,1 +1,270 @@
+import sqlite3
+from datetime import datetime
+import pandas as pd
+import streamlit as st
 
+# ==========================================
+# 1. DB 연동 함수들
+# ==========================================
+DB_FILE = "purchase_orders.db"
+
+
+def get_connection():
+    return sqlite3.connect(DB_FILE)
+
+
+def init_db():
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS order_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            order_date TEXT,
+            item_type TEXT,
+            size TEXT,
+            material TEXT,
+            quantity INTEGER,
+            note TEXT
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+
+def load_data():
+    conn = get_connection()
+    df = pd.read_sql_query(
+        """
+        SELECT 
+            id,
+            order_date as '주문일시',
+            item_type as '자재',
+            size as '규격',
+            material as '재질',
+            quantity as '수량',
+            note as '비고'
+        FROM order_items 
+        ORDER BY id DESC
+    """,
+        conn,
+    )
+    conn.close()
+    return df
+
+
+init_db()
+
+# ==========================================
+# 2. 마스터 데이터 정의
+# ==========================================
+SIZES = [
+    "8A",
+    "10A",
+    "15A",
+    "20A",
+    "25A",
+    "32A",
+    "40A",
+    "50A",
+    "65A",
+    "80A",
+    "90A",
+    "100A",
+]
+MATERIALS = ["Steel", "SUS", "Copper"]
+ITEM_TYPES = [
+    "Pipe",
+    "Valve",
+    "Flange",
+    "Coupling",
+    "Bolt",
+    "Nut",
+    "Gasket",
+    "Elbow",
+    "Tee",
+]
+
+# ==========================================
+# 3. Streamlit UI 구성
+# ==========================================
+st.set_page_config(page_title="자재 주문 요청서", layout="wide")
+st.title("📦 자재 주문 요청서 작성 및 관리 시스템")
+st.markdown("---")
+
+if "cart" not in st.session_state:
+    st.session_state.cart = []
+
+# --- 상단: 주문 입력 및 임시 목록 ---
+col1, col2 = st.columns([1, 1.2])
+
+with col1:
+    st.subheader("📝 주문 품목 입력")
+    with st.form(key="item_form", clear_on_submit=True):
+        item_type = st.selectbox("자재 종류 (Item)", ITEM_TYPES)
+        size = st.selectbox("규격 (Size)", SIZES)
+        material = st.selectbox("재질 (Material)", MATERIALS)
+        quantity = st.number_input("수량 (Quantity)", min_value=1, value=1, step=1)
+        note = st.text_input("비고 (Note)", placeholder="특이사항 작성")
+
+        add_button = st.form_submit_button(label="🛒 장바구니에 추가")
+
+        if add_button:
+            st.session_state.cart.append(
+                {
+                    "자재 종류": item_type,
+                    "규격": size,
+                    "재질": material,
+                    "수량": quantity,
+                    "비고": note,
+                }
+            )
+            st.success(f"{item_type} ({size}, {material}) 추가되었습니다.")
+
+with col2:
+    st.subheader("📋 작성 중인 주문 목록")
+    if st.session_state.cart:
+        df_cart = pd.DataFrame(st.session_state.cart)
+        st.dataframe(df_cart, use_container_width=True)
+
+        col_btn1, col_btn2 = st.columns([1, 1])
+        with col_btn1:
+            if st.button("🚀 주문서 최종 제출 (DB 저장)", type="primary"):
+                conn = get_connection()
+                cursor = conn.cursor()
+                now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+                for item in st.session_state.cart:
+                    cursor.execute(
+                        """
+                        INSERT INTO order_items (order_date, item_type, size, material, quantity, note)
+                        VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                        (
+                            now,
+                            item["자재 종류"],
+                            item["규격"],
+                            item["재질"],
+                            item["수량"],
+                            item["비고"],
+                        ),
+                    )
+
+                conn.commit()
+                conn.close()
+
+                st.session_state.cart = []
+                st.balloons()
+                st.success("주문서가 성공적으로 저장되었습니다!")
+                st.rerun()
+
+        with col_btn2:
+            if st.button("🗑️ 목록 비우기"):
+                st.session_state.cart = []
+                st.rerun()
+    else:
+        st.info("왼쪽 양식에서 품목을 선택한 후 장바구니에 추가해 주세요.")
+
+st.markdown("---")
+
+# ==========================================
+# 4. DB 누적 주문 내역 (수정 및 선택 삭제 기능)
+# ==========================================
+st.subheader("🗄️ 누적 주문 내역 관리 (수정 / 선택 삭제)")
+
+df_db = load_data()
+
+if not df_db.empty:
+    # 1. 체크박스 선택 열 추가 ('선택' 컬럼을 맨 앞에 추가)
+    df_db.insert(0, "선택", False)
+
+    st.caption(
+        "💡 **사용법**: 테이블에서 값을 직접 클릭해 **수정**할 수 있습니다. 삭제할 항목은 **'선택' 체크박스**를 누른 뒤 아래 **[선택 항목 삭제]** 버튼을 누르세요."
+    )
+
+    # 2. st.data_editor를 통한 데이터 수정 및 선택 UI
+    edited_df = st.data_editor(
+        df_db,
+        hide_index=True,
+        column_config={
+            "선택": st.column_config.CheckboxColumn(
+                "선택", default=False, help="삭제할 항목을 선택하세요"
+            ),
+            "id": st.column_config.NumberColumn("ID", disabled=True),  # ID는 수정 불가
+            "주문일시": st.column_config.TextColumn(
+                "주문일시", disabled=True
+            ),  # 일시 수정 불가
+            "자재": st.column_config.SelectboxColumn("자재", options=ITEM_TYPES),
+            "규격": st.column_config.SelectboxColumn("규격", options=SIZES),
+            "재질": st.column_config.SelectboxColumn("재질", options=MATERIALS),
+            "수량": st.column_config.NumberColumn(
+                "수량", min_value=1, step=1
+            ),
+            "비고": st.column_config.TextColumn("비고"),
+        },
+        disabled=["id", "주문일시"],  # ID와 주문일시는 편집 불가 설정
+        use_container_width=True,
+        key="db_editor",
+    )
+
+    col_db_btn1, col_db_btn2 = st.columns([1, 5])
+
+    # --- A. 수정 사항 저장 ---
+    with col_db_btn1:
+        if st.button("💾 수정사항 DB 저장", type="primary"):
+            conn = get_connection()
+            cursor = conn.cursor()
+
+            # 에디터에서 수정된 데이터들을 DB에 반영
+            for index, row in edited_df.iterrows():
+                cursor.execute(
+                    """
+                    UPDATE order_items 
+                    SET item_type = ?, size = ?, material = ?, quantity = ?, note = ?
+                    WHERE id = ?
+                """,
+                    (
+                        row["자재"],
+                        row["규격"],
+                        row["재질"],
+                        row["수량"],
+                        row["비고"],
+                        row["id"],
+                    ),
+                )
+
+            conn.commit()
+            conn.close()
+            st.success("수정사항이 성공적으로 반영되었습니다!")
+            st.rerun()
+
+    # --- B. 선택한 항목 삭제 ---
+    with col_db_btn2:
+        # '선택' 체크박스가 참(True)인 행만 필터링
+        selected_rows = edited_df[edited_df["선택"] == True]
+
+        if st.button(f"🗑️ 선택 항목 삭제 ({len(selected_rows)}개)"):
+            if not selected_rows.empty:
+                selected_ids = selected_rows["id"].tolist()
+
+                conn = get_connection()
+                cursor = conn.cursor()
+
+                # 선택된 ID 들을 DB에서 삭제 (IN 절 사용)
+                placeholders = ",".join(["?"] * len(selected_ids))
+                cursor.execute(
+                    f"DELETE FROM order_items WHERE id IN ({placeholders})",
+                    selected_ids,
+                )
+
+                conn.commit()
+                conn.close()
+
+                st.success(
+                    f"선택한 {len(selected_ids)}개 항목이 삭제되었습니다."
+                )
+                st.rerun()
+            else:
+                st.warning("삭제할 항목의 체크박스를 선택해 주세요.")
+
+else:
+    st.caption("저장된 주문 내역이 없습니다.")
